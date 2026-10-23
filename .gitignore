@@ -221,3 +221,9 @@ __marimo__/
 *.love
 build/
 dist/
+
+# Tiled editor state
+*.tiled-session
+
+# Vendored Lua libraries (overrides the Python lib/ rule above)
+!lib/
