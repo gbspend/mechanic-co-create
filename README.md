@@ -27,6 +27,23 @@ In VS Code, press `Ctrl+Shift+B` to run it.
 - **R**: reload the level
 - **Esc**: quit
 
+## Project layout
+
+```
+main.lua          Entry point: loads the level, handles input
+conf.lua          Window and LÖVE settings
+src/
+  level.lua       Loads a map, sets up collisions, spawns entities, runs the camera
+  player.lua      Player movement (Jump and Run) and tuning values
+maps/
+  level1.tmx      Level source, edit this in Tiled
+  level1.lua      Lua export of level1.tmx, loaded by the game
+  tilesets/       Tileset images
+lib/
+  sti/            Tiled map loader (Simple Tiled Implementation)
+  bump.lua        Collision library
+```
+
 ## Editing levels
 
 Levels are made in [Tiled](https://www.mapeditor.org/).
