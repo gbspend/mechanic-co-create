@@ -24,6 +24,7 @@ function Player.new(world, x, y, w, h)
         vx = 0, vy = 0,
         ax = 0, ay = 0,
         input_x = 0,
+        input_enabled = true, -- off while typing in the UI
         on_ground = false,
     }, Player)
     world:add(self, self.x, self.y, self.w, self.h)
@@ -46,7 +47,7 @@ end
 function Player:update(dt)
     -- Run
     if self.on_ground or self.air_control then
-        self.input_x = getAxis()
+        self.input_x = self.input_enabled and getAxis() or 0
     end
     self.vx = self.input_x * self.speed
 

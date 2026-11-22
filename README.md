@@ -35,6 +35,7 @@ conf.lua          Window and LÖVE settings
 src/
   level.lua       Loads a map, sets up collisions, spawns entities, runs the camera
   player.lua      Player movement (Jump and Run) and tuning values
+  mechanic_inspector.lua  Right-hand panel: variable inspector and trigger/effect code boxes
 maps/
   level1.tmx      Level source, edit this in Tiled
   level1.lua      Lua export of level1.tmx, loaded by the game

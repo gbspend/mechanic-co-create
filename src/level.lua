@@ -6,7 +6,8 @@ local Player = require("src.player")
 local Level = {}
 Level.__index = Level
 
-function Level.load(path)
+-- viewW/viewH: size of the on-screen area the level is drawn into
+function Level.load(path, viewW, viewH)
     local self = setmetatable({ path = path, debug = false }, Level)
 
     self.map   = sti(path, { "bump" })
@@ -31,6 +32,7 @@ function Level.load(path)
     entities.draw = function() self.player:draw() end
 
     self.camX, self.camY = 0, 0
+    self:resize(viewW, viewH)
     return self
 end
 
@@ -47,7 +49,7 @@ function Level:update(dt)
 end
 
 function Level:updateCamera()
-    local sw, sh = love.graphics.getDimensions()
+    local sw, sh = self.viewW, self.viewH
     local p = self.player
     local x = p.x + p.w / 2 - sw / 2
     local y = p.y + p.h / 2 - sh / 2
@@ -66,6 +68,7 @@ function Level:draw()
 end
 
 function Level:resize(w, h)
+    self.viewW, self.viewH = w, h
     self.map:resize(w, h)
 end
 
