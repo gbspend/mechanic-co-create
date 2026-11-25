@@ -1,0 +1,129 @@
+# Mechanics rules, loaded at game start. Press R in-game to reload this file
+# and restart the level.
+#
+# Syntax
+#   BIND name: KEY KEY ...                   name a button (pygame key names)
+#   [type]                                   rules for an entity type: player, walker, flyer, bullet
+#   TRIGGER & TRIGGER -> EFFECT, EFFECT      all triggers true -> run effects in order
+#   !TRIGGER                                 negated trigger
+#   # comment
+#
+# Variables (lowercase) stand for other entities
+#   COLLIDE(e)                 fills in e with each entity touching us (one match each)
+#   e(TRIGGER)  e(EFFECT)      check / apply on e instead of on self
+#   self                       always means the entity running the rule
+#   Effects run once for every match that passes all triggers. A variable must
+#   be filled in (left to right) before it's used. Example, a stomp:
+#     COLLIDE(e) & IS(e, player) & e(FALLING) -> DIE, e(SET_YVEL(8))
+#
+# Entity types: every [type] in this file, plus the engine's own:
+#   _tile                      solid level tiles (don't run rules; e(DIE) breaks one)
+# A new [type] with no art in the game shows as a pink square; SPAWN it to use it.
+#
+# Each frame: the game senses contacts, then every entity runs its rules top to
+# bottom (player first), then everything moves and collides with tiles.
+# Order matters (e.g. SET_XVEL(0) before the walk rules that add to it).
+# Once an entity dies, the rest of its rules are skipped.
+# Y velocity is UP-POSITIVE: jump is ADD_YVEL(+), gravity is ADD_YVEL(-).
+# Units: pixels and frames (60 frames per second).
+# An entity with no rules does nothing: no gravity, can't hurt or be hurt.
+#
+# Triggers
+#   AUTO                       every frame
+#   START                      the entity's first frame (after spawn / restart)
+#   EVERY(n)                   every n frames
+#   BUTTON_PRESS(b)            b went down this frame
+#   BUTTON_HELD(b)             b is down
+#   BUTTON_RELEASE(b)          b went up this frame
+#   ON_GROUND  IN_AIR          standing on a tile, or not
+#   RISING  FALLING            moving up, or down
+#   WALL_AHEAD                 a tile directly in front (facing direction)
+#   LEDGE_AHEAD                on the ground, with no floor in front
+#   FELL_OUT                   fell below the bottom of the level
+#   READY(timer)               timer (set by COOLDOWN) has run out
+#   AFTER(n)                   n or more frames since this entity spawned
+#   COLLIDE(e)                 e = each entity or tile touching us (entities: hitboxes overlap)
+#   NEAR(e, d)                 e = each entity within d pixels (center to center)
+#   OWNER(o)                   o = whoever SPAWNed this entity (or the owner it was given)
+#   IS(e, type)                e is of that entity type
+#   FROM_ABOVE(e)              e's feet were above our hitbox top last frame (e landed on us)
+#   FROM_BELOW(e)              e's head was below our hitbox bottom last frame (e hit us from under)
+#
+# Effects
+#   ADD_XVEL(n)  SET_XVEL(n)  SCALE_XVEL(f)  CLAMP_XVEL(lo, hi)
+#   ADD_YVEL(n)  SET_YVEL(n)  SCALE_YVEL(f)  CLAMP_YVEL(lo, hi)
+#   WALK(speed)                set x velocity to speed in the facing direction
+#   SPRING_Y(k)                accelerate toward spawn height (k = stiffness)
+#   FACE(LEFT | RIGHT)  FACE_TOWARD(e)  TURN
+#   SPAWN(type, owner)         new entity just in front of us, facing our way; owner is
+#                              optional (default self) and readable with OWNER(o)
+#   COOLDOWN(timer, frames)    start a countdown, checked with READY(timer)
+#   DIE                        remove this entity (for the player: restart the level)
+
+#Some combinations to try, edited in RULES.txt and reloaded with R:
+#- Breakable bricks (in [player]): COLLIDE(t) & IS(t, _tile) & t(FROM_BELOW(self)) -> t(DIE)
+#- Enemies bounce off each other (in [walker]): COLLIDE(e) & IS(e, walker) -> TURN
+#- Turret walker (in [walker]): NEAR(e, 300) & IS(e, player) & EVERY(60) -> FACE_TOWARD(e), SPAWN(bullet)
+#- Bullets break bricks (in [bullet], above its _tile line): COLLIDE(t) & IS(t, _tile) -> t(DIE), DIE
+#- Lobbed bullets (in [bullet]): START -> ADD_YVEL(5)   and   AUTO -> ADD_YVEL(-0.3)
+#- Bulletproof flyer (in [flyer], replacing its bullet line): COLLIDE(b) & IS(b, bullet) -> b(DIE)
+#- Flyer drops walkers (in [flyer]): EVERY(180) -> SPAWN(walker)
+
+BIND left:  LEFT A
+BIND right: RIGHT D
+BIND jump:  SPACE W UP Z K
+BIND shoot: J X
+
+[player]
+# Walk: no momentum, speed is set fresh each frame
+AUTO -> SET_XVEL(0)
+BUTTON_HELD(left)  -> ADD_XVEL(-4), FACE(LEFT)
+BUTTON_HELD(right) -> ADD_XVEL(4), FACE(RIGHT)
+
+# Jump
+BUTTON_PRESS(jump) & ON_GROUND -> ADD_YVEL(10)
+#Experiment worked! LEDGE_AHEAD & ON_GROUND -> ADD_YVEL(10)
+
+# Gravity, halved while rising with jump held (hold to jump higher)
+AUTO -> ADD_YVEL(-0.6)
+BUTTON_HELD(jump) & RISING -> ADD_YVEL(0.3)
+AUTO -> CLAMP_YVEL(-12, 100)
+
+# Shoot
+BUTTON_PRESS(shoot) & READY(shoot) -> SPAWN(bullet, self), COOLDOWN(shoot, 15)
+
+# Dying: pits, and bullets fired by anyone but a player
+FELL_OUT -> DIE
+COLLIDE(b) & IS(b, bullet) & b(OWNER(o)) & !IS(o, player) -> DIE, b(DIE)
+
+[walker]
+# Patrol: walk forward, turn around at walls and ledges
+START -> FACE(LEFT)
+AUTO -> ADD_YVEL(-0.6), CLAMP_YVEL(-12, 100)
+WALL_AHEAD -> TURN
+LEDGE_AHEAD -> TURN
+AUTO -> WALK(1.2)
+
+# Combat
+COLLIDE(b) & IS(b, bullet) & b(OWNER(o)) & IS(o, player) -> DIE, b(DIE)
+COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET_YVEL(8))
+COLLIDE(e) & IS(e, player) -> e(DIE)
+FELL_OUT -> DIE
+
+[flyer]
+# Bob up and down around the spawn point. The spring makes a smooth swing:
+# height = push / sqrt(k) = 2.8 / 0.04 = 70 px, one cycle = 2*pi / sqrt(k) frames.
+START -> ADD_YVEL(-2.8)
+AUTO -> SPRING_Y(0.0016)
+
+# Combat
+COLLIDE(b) & IS(b, bullet) & b(OWNER(o)) & IS(o, player) -> DIE, b(DIE)
+COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET_YVEL(8))
+COLLIDE(e) & IS(e, player) -> e(DIE)
+
+[bullet]
+# Fly straight, vanish on walls or after 45 frames (450 px at speed 10).
+# Hitting things is up to the target's rules (see the bullet lines above).
+AUTO -> WALK(10)
+COLLIDE(t) & IS(t, _tile) -> DIE
+AFTER(45) -> DIE
