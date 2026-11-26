@@ -1,0 +1,59 @@
+# BOUNCE: the pits are too wide to jump. Turrets fire slow orbs across them:
+# land on an orb to bounce off it, but touch one any other way and you die.
+# Turrets can't be hurt, but their tops are solid: stand on them. No gun.
+# Vocabulary reference: the base RULES.txt (two folders up).
+
+BIND left:  LEFT A
+BIND right: RIGHT D
+BIND jump:  SPACE W UP Z K
+
+[player]
+AUTO -> SET_XVEL(0)
+BUTTON_HELD(left)  -> ADD_XVEL(-4), FACE(LEFT)
+BUTTON_HELD(right) -> ADD_XVEL(4), FACE(RIGHT)
+
+BUTTON_PRESS(jump) & ON_GROUND -> SET_YVEL(10)
+AUTO -> ADD_YVEL(-0.6)
+BUTTON_HELD(jump) & RISING -> ADD_YVEL(0.3)
+AUTO -> CLAMP_YVEL(-12, 100)
+
+# Orbs: bounce if we came down on top (hold jump for extra height), else die
+COLLIDE(b) & IS(b, orb) & FALLING & b(FROM_ABOVE(self)) -> SET_YVEL(9)
+COLLIDE(b) & IS(b, orb) & !b(FROM_ABOVE(self)) -> DIE
+
+# Turret tops are solid: on top of one and not jumping up -> stand on it.
+# (These come after gravity so they cancel it.)
+COLLIDE(t) & IS(t, turret_r) & t(FROM_ABOVE(self)) & !RISING -> STAND_ON(t)
+COLLIDE(t) & IS(t, turret_l) & t(FROM_ABOVE(self)) & !RISING -> STAND_ON(t)
+
+FELL_OUT -> DIE
+
+[orb]
+# Drift straight ahead; pop on walls or after 5 seconds
+AUTO -> WALK(2)
+COLLIDE(t) & IS(t, _tile) -> DIE
+AFTER(300) -> DIE
+
+[turret_r]
+START -> FACE(RIGHT)
+EVERY(80) -> SPAWN(orb)
+
+[turret_l]
+START -> FACE(LEFT)
+EVERY(80) -> SPAWN(orb)
+
+[walker]
+START -> FACE(LEFT)
+AUTO -> ADD_YVEL(-0.6), CLAMP_YVEL(-12, 100)
+WALL_AHEAD -> TURN
+LEDGE_AHEAD -> TURN
+AUTO -> WALK(1.2)
+COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET_YVEL(8))
+COLLIDE(e) & IS(e, player) -> e(DIE)
+FELL_OUT -> DIE
+
+[flyer]
+START -> ADD_YVEL(-2.8)
+AUTO -> SPRING_Y(0.0016)
+COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET_YVEL(8))
+COLLIDE(e) & IS(e, player) -> e(DIE)

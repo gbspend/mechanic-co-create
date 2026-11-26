@@ -16,6 +16,9 @@
 #   be filled in (left to right) before it's used. Example, a stomp:
 #     COLLIDE(e) & IS(e, player) & e(FALLING) -> DIE, e(SET_YVEL(8))
 #
+# RANDOM(min, max) can replace any plain number, e.g. COOLDOWN(hop, RANDOM(50, 110)).
+# It rolls a new value every time its trigger or effect runs.
+#
 # Entity types: every [type] in this file, plus the engine's own:
 #   _tile                      solid level tiles (don't run rules; e(DIE) breaks one)
 # A new [type] with no art in the game shows as a pink square; SPAWN it to use it.
@@ -55,6 +58,7 @@
 #   WALK(speed)                set x velocity to speed in the facing direction
 #   SPRING_Y(k)                accelerate toward spawn height (k = stiffness)
 #   FACE(LEFT | RIGHT)  FACE_TOWARD(e)  TURN
+#   STAND_ON(e)                stand on top of e like floor (counts as ON_GROUND, rides e's motion)
 #   SPAWN(type, owner)         new entity just in front of us, facing our way; owner is
 #                              optional (default self) and readable with OWNER(o)
 #   COOLDOWN(timer, frames)    start a countdown, checked with READY(timer)
@@ -81,7 +85,7 @@ BUTTON_HELD(left)  -> ADD_XVEL(-4), FACE(LEFT)
 BUTTON_HELD(right) -> ADD_XVEL(4), FACE(RIGHT)
 
 # Jump
-BUTTON_PRESS(jump) & ON_GROUND -> ADD_YVEL(10)
+BUTTON_PRESS(jump) & ON_GROUND -> SET_YVEL(10)
 #Experiment worked! LEDGE_AHEAD & ON_GROUND -> ADD_YVEL(10)
 
 # Gravity, halved while rising with jump held (hold to jump higher)

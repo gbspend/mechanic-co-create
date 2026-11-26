@@ -29,10 +29,14 @@ parameter to give it a meaning that is checked on load:
     "dir"     LEFT, RIGHT, -1 or 1
 Arity is checked too, so typos fail at startup with a line number.
 
+Anywhere a plain number goes, RANDOM(min, max) can stand in. It rolls a new
+value (any number in the range) every time its trigger or effect runs.
+
 Y velocity in rules is UP-POSITIVE (jump = ADD_YVEL(10), gravity = ADD_YVEL(-0.6)),
 even though pygame's screen y grows downward. The conversion happens here.
 """
 import inspect
+import random
 import re
 from dataclasses import dataclass, field
 
@@ -81,13 +85,45 @@ def key_code(name):
 
 
 class Input:
-    """Per-frame button state, with named buttons from BIND lines."""
+    """Per-frame button state, with named buttons from BIND lines.
 
-    def __init__(self, bindings):
+    Input buffering: a key press keeps BUTTON_PRESS true for up to
+    buffer_frames more frames, until a rule that tests it fires. Every rule
+    that frame still sees it; it's used up at the end of the frame. So a rule
+    that would react on the press frame still does, and a press nothing could
+    use yet (jump just before landing) waits a moment for a rule that can.
+    """
+
+    def __init__(self, bindings, buffer_frames=0):
         self.bindings = bindings          # name -> set of key codes
+        self.buffer_frames = buffer_frames
         self.held = None
-        self.pressed = set()
+        self.pressed = {}                 # key -> buffered frames left
         self.released = set()
+        self.used = set()                 # pressed keys a firing rule consumed this frame
+
+    def press(self, key):
+        self.pressed[key] = self.buffer_frames
+
+    def release(self, key):
+        self.released.add(key)
+
+    def use(self, b):
+        self.used |= self.keys_for(b) & self.pressed.keys()
+
+    def end_frame(self):
+        for k in list(self.pressed):
+            if k in self.used or self.pressed[k] <= 0:
+                del self.pressed[k]
+            else:
+                self.pressed[k] -= 1
+        self.used.clear()
+        self.released.clear()
+
+    def clear(self):
+        self.pressed.clear()
+        self.released.clear()
+        self.used.clear()
 
     def keys_for(self, button):
         if button in self.bindings:
@@ -99,7 +135,7 @@ class Input:
         return any(self.held[k] for k in self.keys_for(b))
 
     def was_pressed(self, b):
-        return not self.pressed.isdisjoint(self.keys_for(b))
+        return not self.keys_for(b).isdisjoint(self.pressed)
 
     def was_released(self, b):
         return not self.released.isdisjoint(self.keys_for(b))
@@ -277,6 +313,20 @@ def e_turn(ent, ctx):
     ent.facing = -ent.facing
 
 
+@effect("STAND_ON")
+def e_stand_on(ent, ctx, e: "ref"):
+    """Stand on top of e, as if it were floor.
+
+    Sits 1px into e's hitbox so the two stay in contact next frame, counts as
+    on_ground after this frame's move, and rides along with e's velocity.
+    """
+    ent.rect.bottom = e.hitbox.top + 1
+    ent.fy = float(ent.rect.y)
+    ent.vy = max(e.vy, 0)
+    ent.vx += e.vx
+    ent.supported = True
+
+
 @effect("WALK")
 def e_walk(ent, ctx, speed):
     ent.vx = ent.facing * speed
@@ -310,6 +360,15 @@ class Var:
 
 
 @dataclass
+class Random:
+    lo: float
+    hi: float
+
+    def roll(self):
+        return random.uniform(self.lo, self.hi)
+
+
+@dataclass
 class Call:
     name: str
     spec: Spec
@@ -325,6 +384,8 @@ class Call:
                 out.append(None)
             elif isinstance(a, Var):
                 out.append(env[a.name])
+            elif isinstance(a, Random):
+                out.append(a.roll())
             else:
                 out.append(a)
         return out
@@ -369,7 +430,12 @@ class Rule:
         return out
 
     def run(self, ent, ctx):
-        for env in self.matches(ent, ctx):
+        envs = self.matches(ent, ctx)
+        if envs:                                  # fired: consume buffered presses it used
+            for t in self.triggers:
+                if t.name == "BUTTON_PRESS" and not t.negate:
+                    ctx.input.use(t.args[0])
+        for env in envs:
             if ent.dead:
                 break
             for e in self.effects:
@@ -410,7 +476,20 @@ def split_top(s, sep):
     return [p.strip() for p in parts]
 
 
+RANDOM_RE = re.compile(r"^RANDOM\s*\((.*)\)$")
+
+
 def parse_arg(a):
+    m = RANDOM_RE.match(a)
+    if m:
+        parts = split_top(m.group(1), ",")
+        try:
+            lo, hi = (float(p) for p in parts)
+        except ValueError:
+            raise RuleError(f"RANDOM needs two numbers, like RANDOM(2, 5), got {a!r}")
+        if lo > hi:
+            raise RuleError(f"RANDOM(min, max) has min > max in {a!r}")
+        return Random(lo, hi)
     try:
         return float(a)
     except ValueError:
@@ -449,7 +528,10 @@ class Parser:
             known = ", ".join(sorted(registry))
             self.err(f"unknown {kind} {name!r}. Known: {known}")
         spec = registry[name]
-        args = [parse_arg(a) for a in split_top(argstr, ",")] if argstr and argstr.strip() else []
+        try:
+            args = [parse_arg(a) for a in split_top(argstr, ",")] if argstr and argstr.strip() else []
+        except RuleError as err:
+            self.err(str(err))
         try:
             inspect.signature(spec.fn).bind(None, None, *args)
         except TypeError:
@@ -458,6 +540,8 @@ class Parser:
 
         for i, a in enumerate(args):
             k = spec.kinds[i] if i < len(spec.kinds) else None
+            if isinstance(a, Random) and k is not None:
+                self.err(f"{name}: RANDOM can only stand in for a number, not argument {i + 1}")
             if k in ("bind", "ref"):
                 if not (isinstance(a, str) and VAR_RE.match(a)):
                     self.err(f"{name}: argument {i + 1} must be a lowercase variable name, got {a!r}")
