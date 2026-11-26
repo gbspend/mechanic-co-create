@@ -1,8 +1,8 @@
 // Level file. Lines starting with // are comments.
 // Map: '#' solid tile, '.' empty, P player start (exactly one).
 // Built-in letters: P player, G walker, F flyer.
-// Add your own:   LEGEND X: type            (letter X spawns that entity type)
-//                 LEGEND X: type as look    (...drawn with another type's art)
+// Add your own:   LEGEND X: type    (letter X places that entity or tile type;
+//                                    its art is set in RULES.txt: [type: sprite=...])
 // Short rows are padded with '.'. Gaps in the bottom rows are bottomless pits.
 #..................................................................................................#
 #..................................................................................................#

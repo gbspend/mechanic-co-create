@@ -1,8 +1,8 @@
 // Bounce: turrets fire orbs over the pits. Land on orbs to bounce across
 // Map: '#' solid tile, '.' empty, P player start. Built-in: G walker, F flyer.
-// LEGEND X: type [as look] adds letters. Lines starting with // are comments.
-LEGEND R: turret_r as turret
-LEGEND L: turret_l as turret
+// LEGEND X: type adds letters (art: [type: sprite=...] in RULES.txt). Lines starting with // are comments.
+LEGEND R: turret_r
+LEGEND L: turret_l
 #............................................................................................................#
 #............................................................................................................#
 #............................................................................................................#

@@ -1,5 +1,6 @@
-# MOON: low gravity, a double jump, and a grenade launcher whose shots bounce.
-# Walkers hop in place every so often; flyers swing much wider.
+# MOON: low gravity, a double jump, and a grenade launcher whose shots bounce
+# off floors and walls, for bank shots around corners.
+# Walkers hop in place every so often; flyers swing much wider. Spikes kill you.
 # Vocabulary reference: the base RULES.txt (two folders up).
 
 BIND left:  LEFT A
@@ -7,57 +8,60 @@ BIND right: RIGHT D
 BIND jump:  SPACE W UP Z K
 BIND shoot: J X
 
-[player]
-AUTO -> SET_XVEL(0)
-BUTTON_HELD(left)  -> ADD_XVEL(-3.5), FACE(LEFT)
-BUTTON_HELD(right) -> ADD_XVEL(3.5), FACE(RIGHT)
+[spike: tile, sprite=spikes]
 
-# Double jump: a timer used as a flag. Landing makes the air jump READY again;
-# using it sets a timer so long it never runs out mid-air.
-ON_GROUND -> COOLDOWN(air_jump, 0)
-BUTTON_PRESS(jump) & ON_GROUND -> SET_YVEL(7.5)
-BUTTON_PRESS(jump) & IN_AIR & READY(air_jump) -> SET_YVEL(6.5), COOLDOWN(air_jump, 100000)
+[player]
+AUTO -> SET(_xvel, 0)
+BUTTON_HELD(left)  -> ADD(_xvel, -3.5), FACE(LEFT)
+BUTTON_HELD(right) -> ADD(_xvel, 3.5), FACE(RIGHT)
+
+# Double jump: landing refills air_jumps (raise it for a triple jump)
+ON_GROUND -> SET(air_jumps, 1)
+BUTTON_PRESS(jump) & ON_GROUND -> SET(_yvel, 7.5)
+BUTTON_PRESS(jump) & IN_AIR & CHECK(air_jumps >= 1) -> SET(_yvel, 6.5), ADD(air_jumps, -1)
 
 # Moon gravity (weaker still while holding jump), slow terminal velocity
-AUTO -> ADD_YVEL(-0.25)
-BUTTON_HELD(jump) & RISING -> ADD_YVEL(0.1)
-AUTO -> CLAMP_YVEL(-6, 100)
+AUTO -> ADD(_yvel, -0.25)
+BUTTON_HELD(jump) & RISING -> ADD(_yvel, 0.1)
+AUTO -> CLAMP(_yvel, -6, 100)
 
 BUTTON_PRESS(shoot) & READY(shoot) -> SPAWN(bullet, self), COOLDOWN(shoot, 25)
 
 FELL_OUT -> DIE
+# Spikes only kill from above (landing or walking on them); bumping their side is safe
+COLLIDE(t) & IS(t, spike) & t(FROM_ABOVE(self)) -> DIE
 COLLIDE(b) & IS(b, bullet) & b(OWNER(o)) & !IS(o, player) -> DIE, b(DIE)
 
-[bullet]
-# Grenade: lobbed, bounces along the ground, gone on walls or after 2 seconds
-START -> ADD_YVEL(4)
-AUTO -> ADD_YVEL(-0.2), WALK(6)
-ON_GROUND -> SET_YVEL(3.5)
-WALL_AHEAD -> DIE
-AFTER(120) -> DIE
+[bullet: hitbox=1.2]          # hits a little outside its sprite, easier to land
+# Grenade: lobbed, bounces off floors and walls, gone after 2.5 seconds
+START -> ADD(_yvel, 4)
+AUTO -> ADD(_yvel, -0.2), WALK(6)
+ON_GROUND -> SET(_yvel, 3.5)
+WALL_AHEAD -> TURN
+AFTER(150) -> DIE
 
 [walker]
 START -> FACE(LEFT)
-AUTO -> ADD_YVEL(-0.25), CLAMP_YVEL(-6, 100)
+AUTO -> ADD(_yvel, -0.25), CLAMP(_yvel, -6, 100)
 WALL_AHEAD -> TURN
 LEDGE_AHEAD -> TURN
 AUTO -> WALK(1)
 # Hop straight up now and then (no sideways drift, so they don't hop off ledges).
 # Random first wait, hop height and gap between hops keep them out of sync.
 START -> COOLDOWN(hop, RANDOM(0, 90))
-ON_GROUND & READY(hop) -> ADD_YVEL(RANDOM(4.5, 7)), COOLDOWN(hop, RANDOM(50, 110))
-IN_AIR -> SET_XVEL(0)
+ON_GROUND & READY(hop) -> ADD(_yvel, RANDOM(4.5, 7)), COOLDOWN(hop, RANDOM(50, 110))
+IN_AIR -> SET(_xvel, 0)
 
 COLLIDE(b) & IS(b, bullet) & b(OWNER(o)) & IS(o, player) -> DIE, b(DIE)
-COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET_YVEL(6))
+COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET(_yvel, 6))
 COLLIDE(e) & IS(e, player) -> e(DIE)
 FELL_OUT -> DIE
 
 [flyer]
 # Wider, slower swing: height = 3.2 / sqrt(0.0009) = ~107 px
-START -> ADD_YVEL(-3.2)
+START -> ADD(_yvel, -3.2)
 AUTO -> SPRING_Y(0.0009)
 
 COLLIDE(b) & IS(b, bullet) & b(OWNER(o)) & IS(o, player) -> DIE, b(DIE)
-COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET_YVEL(6))
+COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET(_yvel, 6))
 COLLIDE(e) & IS(e, player) -> e(DIE)

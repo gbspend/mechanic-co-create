@@ -3,38 +3,66 @@
 #
 # Syntax
 #   BIND name: KEY KEY ...                   name a button (pygame key names)
+#   BUFFER name name ...: frames             how long a press of these buttons waits for a rule
+#                                            that uses it (default 6). The names share one slot:
+#                                            pressing one cancels the others' waiting presses.
+#                                            e.g. BUFFER up down left right: 60  (maze-style turns)
 #   [type]                                   rules for an entity type: player, walker, flyer, bullet
+#   [type: option, option=value]             the same, with options (see Types below)
 #   TRIGGER & TRIGGER -> EFFECT, EFFECT      all triggers true -> run effects in order
 #   !TRIGGER                                 negated trigger
 #   # comment
 #
-# Variables (lowercase) stand for other entities
+# Entity variables (lowercase) stand for other entities
 #   COLLIDE(e)                 fills in e with each entity touching us (one match each)
 #   e(TRIGGER)  e(EFFECT)      check / apply on e instead of on self
 #   self                       always means the entity running the rule
 #   Effects run once for every match that passes all triggers. A variable must
 #   be filled in (left to right) before it's used. Example, a stomp:
-#     COLLIDE(e) & IS(e, player) & e(FALLING) -> DIE, e(SET_YVEL(8))
+#     COLLIDE(e) & IS(e, player) & e(FALLING) -> DIE, e(SET(_yvel, 8))
+#
+# Vars: numbers stored on an entity
+#   SET(v, n)  ADD(v, n)  SCALE(v, f)  CLAMP(v, lo, hi)     change var v
+#   CHECK(v > n)               trigger; also < <= >= == !=
+#   e(ADD(hp, -1))             a var on another entity
+#   Your own vars: any lowercase name not starting with _ (ammo, hp, keys).
+#   They start at 0, so ADD(ammo, 1) on an entity with no ammo gives 1.
+#   Built-in vars start with _ and are the entity's own engine state:
+#     _xvel  _yvel             velocity, px per frame (_yvel is UP-POSITIVE)
+#     _xpos  _ypos             left edge / bottom edge, px (_ypos = height above the level bottom)
+#     _facing                  1 = right, -1 = left
+#     _age                     frames since spawn (read-only)
+#     _col  _row               grid cell (tile-sized) holding our bottom-center; row 0 is the
+#                              bottom line of level.txt. Setting either jumps to that cell.
 #
 # RANDOM(min, max) can replace any plain number, e.g. COOLDOWN(hop, RANDOM(50, 110)).
 # It rolls a new value every time its trigger or effect runs.
 #
-# Entity types: every [type] in this file, plus the engine's own:
-#   _tile                      solid level tiles (don't run rules; e(DIE) breaks one)
-# A new [type] with no art in the game shows as a pink square; SPAWN it to use it.
+# Types: every [type] in this file, plus the engine's own:
+#   _tile                      the plain '#' tiles. IS(e, _tile) is true for ANY tile type.
+# Level LEGEND lines place types by letter (P player, G walker, F flyer built in).
+# Section options:
+#   sprite=NAME                art from the sprite library: player walker flyer bullet
+#                              turret orb spikes ground brick water. Default: the
+#                              sprite named like the type, else a pink square.
+#   hitbox=N                   hitbox size relative to the sprite, centered: 0.5 half, 1.2 bigger (entities only)
+#   tile                       a tile type: sits in a grid cell, never moves, has no rules.
+#                              Other rules see it with COLLIDE / IS; t(DIE) breaks one.
+#   solid=0                    (tiles) drawn and touchable, but doesn't block movement
+#   e.g.  [chaser: sprite=walker, hitbox=0.6]    [brick: tile, sprite=brick]
+# Any non-tile [type] can be SPAWNed.
 #
 # Each frame: the game senses contacts, then every entity runs its rules top to
 # bottom (player first), then everything moves and collides with tiles.
-# Order matters (e.g. SET_XVEL(0) before the walk rules that add to it).
+# Order matters (e.g. SET(_xvel, 0) before the walk rules that add to it).
 # Once an entity dies, the rest of its rules are skipped.
-# Y velocity is UP-POSITIVE: jump is ADD_YVEL(+), gravity is ADD_YVEL(-).
+# Y velocity is UP-POSITIVE: jump is ADD(_yvel, +), gravity is ADD(_yvel, -).
 # Units: pixels and frames (60 frames per second).
 # An entity with no rules does nothing: no gravity, can't hurt or be hurt.
 #
 # Triggers
-#   AUTO                       every frame
+#   AUTO  AUTO(n)              every frame; every n frames (n counted from spawn)
 #   START                      the entity's first frame (after spawn / restart)
-#   EVERY(n)                   every n frames
 #   BUTTON_PRESS(b)            b went down this frame
 #   BUTTON_HELD(b)             b is down
 #   BUTTON_RELEASE(b)          b went up this frame
@@ -44,6 +72,7 @@
 #   LEDGE_AHEAD                on the ground, with no floor in front
 #   FELL_OUT                   fell below the bottom of the level
 #   READY(timer)               timer (set by COOLDOWN) has run out
+#   CHECK(v > n)               var v compares true (< <= > >= == !=)
 #   AFTER(n)                   n or more frames since this entity spawned
 #   COLLIDE(e)                 e = each entity or tile touching us (entities: hitboxes overlap)
 #   NEAR(e, d)                 e = each entity within d pixels (center to center)
@@ -51,10 +80,11 @@
 #   IS(e, type)                e is of that entity type
 #   FROM_ABOVE(e)              e's feet were above our hitbox top last frame (e landed on us)
 #   FROM_BELOW(e)              e's head was below our hitbox bottom last frame (e hit us from under)
+#   BLOCKED(dir)               the next grid cell UP / DOWN / LEFT / RIGHT holds a solid tile
+#   STEPPING                   in the middle of a STEP glide
 #
 # Effects
-#   ADD_XVEL(n)  SET_XVEL(n)  SCALE_XVEL(f)  CLAMP_XVEL(lo, hi)
-#   ADD_YVEL(n)  SET_YVEL(n)  SCALE_YVEL(f)  CLAMP_YVEL(lo, hi)
+#   SET  ADD  SCALE  CLAMP     change a var (see Vars above), e.g. ADD(_yvel, -0.6)
 #   WALK(speed)                set x velocity to speed in the facing direction
 #   SPRING_Y(k)                accelerate toward spawn height (k = stiffness)
 #   FACE(LEFT | RIGHT)  FACE_TOWARD(e)  TURN
@@ -63,15 +93,19 @@
 #                              optional (default self) and readable with OWNER(o)
 #   COOLDOWN(timer, frames)    start a countdown, checked with READY(timer)
 #   DIE                        remove this entity (for the player: restart the level)
+#   STEP(dir)  STEP(dir, n)    move one grid cell UP / DOWN / LEFT / RIGHT unless it's solid,
+#                              lining up with our cell first. With n: glide there over n
+#                              frames (velocity ignored meanwhile). LEFT / RIGHT also face.
+#                              Grid and pixel movement mix freely: STEP is just an effect.
 
 #Some combinations to try, edited in RULES.txt and reloaded with R:
 #- Breakable bricks (in [player]): COLLIDE(t) & IS(t, _tile) & t(FROM_BELOW(self)) -> t(DIE)
 #- Enemies bounce off each other (in [walker]): COLLIDE(e) & IS(e, walker) -> TURN
-#- Turret walker (in [walker]): NEAR(e, 300) & IS(e, player) & EVERY(60) -> FACE_TOWARD(e), SPAWN(bullet)
+#- Turret walker (in [walker]): NEAR(e, 300) & IS(e, player) & AUTO(60) -> FACE_TOWARD(e), SPAWN(bullet)
 #- Bullets break bricks (in [bullet], above its _tile line): COLLIDE(t) & IS(t, _tile) -> t(DIE), DIE
-#- Lobbed bullets (in [bullet]): START -> ADD_YVEL(5)   and   AUTO -> ADD_YVEL(-0.3)
+#- Lobbed bullets (in [bullet]): START -> ADD(_yvel, 5)   and   AUTO -> ADD(_yvel, -0.3)
 #- Bulletproof flyer (in [flyer], replacing its bullet line): COLLIDE(b) & IS(b, bullet) -> b(DIE)
-#- Flyer drops walkers (in [flyer]): EVERY(180) -> SPAWN(walker)
+#- Flyer drops walkers (in [flyer]): AUTO(180) -> SPAWN(walker)
 
 BIND left:  LEFT A
 BIND right: RIGHT D
@@ -80,18 +114,18 @@ BIND shoot: J X
 
 [player]
 # Walk: no momentum, speed is set fresh each frame
-AUTO -> SET_XVEL(0)
-BUTTON_HELD(left)  -> ADD_XVEL(-4), FACE(LEFT)
-BUTTON_HELD(right) -> ADD_XVEL(4), FACE(RIGHT)
+AUTO -> SET(_xvel, 0)
+BUTTON_HELD(left)  -> ADD(_xvel, -4), FACE(LEFT)
+BUTTON_HELD(right) -> ADD(_xvel, 4), FACE(RIGHT)
 
 # Jump
-BUTTON_PRESS(jump) & ON_GROUND -> SET_YVEL(10)
-#Experiment worked! LEDGE_AHEAD & ON_GROUND -> ADD_YVEL(10)
+BUTTON_PRESS(jump) & ON_GROUND -> SET(_yvel, 10)
+#Experiment worked! LEDGE_AHEAD & ON_GROUND -> ADD(_yvel, 10)
 
 # Gravity, halved while rising with jump held (hold to jump higher)
-AUTO -> ADD_YVEL(-0.6)
-BUTTON_HELD(jump) & RISING -> ADD_YVEL(0.3)
-AUTO -> CLAMP_YVEL(-12, 100)
+AUTO -> ADD(_yvel, -0.6)
+BUTTON_HELD(jump) & RISING -> ADD(_yvel, 0.3)
+AUTO -> CLAMP(_yvel, -12, 100)
 
 # Shoot
 BUTTON_PRESS(shoot) & READY(shoot) -> SPAWN(bullet, self), COOLDOWN(shoot, 15)
@@ -103,26 +137,26 @@ COLLIDE(b) & IS(b, bullet) & b(OWNER(o)) & !IS(o, player) -> DIE, b(DIE)
 [walker]
 # Patrol: walk forward, turn around at walls and ledges
 START -> FACE(LEFT)
-AUTO -> ADD_YVEL(-0.6), CLAMP_YVEL(-12, 100)
+AUTO -> ADD(_yvel, -0.6), CLAMP(_yvel, -12, 100)
 WALL_AHEAD -> TURN
 LEDGE_AHEAD -> TURN
 AUTO -> WALK(1.2)
 
 # Combat
 COLLIDE(b) & IS(b, bullet) & b(OWNER(o)) & IS(o, player) -> DIE, b(DIE)
-COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET_YVEL(8))
+COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET(_yvel, 8))
 COLLIDE(e) & IS(e, player) -> e(DIE)
 FELL_OUT -> DIE
 
 [flyer]
 # Bob up and down around the spawn point. The spring makes a smooth swing:
 # height = push / sqrt(k) = 2.8 / 0.04 = 70 px, one cycle = 2*pi / sqrt(k) frames.
-START -> ADD_YVEL(-2.8)
+START -> ADD(_yvel, -2.8)
 AUTO -> SPRING_Y(0.0016)
 
 # Combat
 COLLIDE(b) & IS(b, bullet) & b(OWNER(o)) & IS(o, player) -> DIE, b(DIE)
-COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET_YVEL(8))
+COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET(_yvel, 8))
 COLLIDE(e) & IS(e, player) -> e(DIE)
 
 [bullet]

@@ -36,9 +36,11 @@ HITBOX_SCALE = 0.7        # enemy hitbox size relative to its sprite, centered
 # Feel, independent of RULES.txt
 COYOTE_FRAMES = 6         # player still counts as ON_GROUND this many frames after walking off a ledge
 BUFFER_FRAMES = 6         # a button press stays live this many frames until a rule uses it
+                          # (default; BUFFER lines in RULES.txt set it per button)
 
 # Level letters every world gets; a level.txt can add more with LEGEND lines.
-DEFAULT_LEGEND = {"P": ("player", None), "G": ("walker", None), "F": ("flyer", None)}
+# '#' is always a plain tile (type _tile, sprite "ground").
+DEFAULT_LEGEND = {"P": "player", "G": "walker", "F": "flyer"}
 
 SKY = (120, 180, 235)
 GRASS = (70, 170, 60)
@@ -60,6 +62,39 @@ def make_grass_tile():
     surf = make_tile()
     pygame.draw.rect(surf, GRASS, (0, 0, TILE, 8))
     pygame.draw.rect(surf, (0, 0, 0), surf.get_rect(), 1)
+    return surf
+
+
+def make_brick_tile():
+    surf = pygame.Surface((TILE, TILE))
+    surf.fill((170, 75, 50))
+    mortar = (215, 195, 170)
+    for y in (0, 8, 16, 24):
+        pygame.draw.line(surf, mortar, (0, y), (TILE, y), 2)
+        off = 0 if (y // 8) % 2 == 0 else TILE // 2
+        for x in (off, off + TILE // 2):
+            pygame.draw.line(surf, mortar, (x % TILE, y), (x % TILE, y + 8), 2)
+    pygame.draw.rect(surf, (0, 0, 0), surf.get_rect(), 1)
+    return surf
+
+
+def make_water_tile():
+    surf = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+    surf.fill((40, 110, 220, 140))
+    pygame.draw.line(surf, (200, 230, 255, 200), (4, 6), (14, 6), 2)
+    pygame.draw.line(surf, (200, 230, 255, 200), (18, 16), (28, 16), 2)
+    return surf
+
+
+def make_spikes_sprite():
+    """Fills most of the tile, so it reads right as a solid tile type too."""
+    surf = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+    pygame.draw.rect(surf, (70, 70, 80), (0, TILE - 6, TILE, 6))               # base plate
+    for i in range(4):
+        x = i * 8
+        tip = [(x, TILE - 6), (x + 4, 4), (x + 8, TILE - 6)]
+        pygame.draw.polygon(surf, (200, 200, 210), tip)
+        pygame.draw.polygon(surf, (60, 60, 70), tip, 1)
     return surf
 
 
@@ -159,24 +194,46 @@ class Entity:
         self.coyote_frames = coyote_frames
         self.coyote = 0                   # frames of coyote time left
         self.timers = {}                  # name -> frames left, set by COOLDOWN
+        self.vars = {}                    # rule-made vars (SET/ADD/CHECK), default 0
         self.age = 0                      # frames since spawn
         self.prev_bottom = self.rect.bottom
         self.prev_top = self.rect.top
         self.dead = False
         self.owner = None                 # set by SPAWN(type, owner), read by OWNER(o)
         self.contacts = []                # entities and tiles touching us, sensed each frame (COLLIDE)
+        self.step = None                  # [from x, from y, to x, to y, frames, done] while a STEP glides
 
     @property
     def hitbox(self):
         if self.hitbox_scale == 1:
             return self.rect
-        hb = pygame.Rect(0, 0, int(self.rect.w * self.hitbox_scale), int(self.rect.h * self.hitbox_scale))
+        hb = pygame.Rect(0, 0, round(self.rect.w * self.hitbox_scale), round(self.rect.h * self.hitbox_scale))
         hb.center = self.rect.center
         return hb
 
     def move(self, solids):
         self.prev_bottom = self.rect.bottom
         self.prev_top = self.rect.top
+        if self.step is not None:
+            self.glide(solids)
+        else:
+            self.physics(solids)
+        for name in self.timers:
+            self.timers[name] = max(0, self.timers[name] - 1)
+        self.age += 1
+
+    def glide(self, solids):
+        """A STEP in progress: slide toward the target cell, ignoring velocity."""
+        sx, sy, tx, ty, n, i = self.step
+        i += 1
+        t = i / n
+        self.fx, self.fy = sx + (tx - sx) * t, sy + (ty - sy) * t
+        self.rect.topleft = (round(self.fx), round(self.fy))
+        self.vx = self.vy = 0.0
+        self.step = None if i >= n else [sx, sy, tx, ty, n, i]
+        self.on_ground = self.rect.move(0, 1).collidelist(solids) != -1
+
+    def physics(self, solids):
         # Horizontal move + collide
         self.fx += self.vx
         self.rect.x = round(self.fx)
@@ -220,10 +277,6 @@ class Entity:
             self.coyote -= 1
             self.on_ground = True
 
-        for name in self.timers:
-            self.timers[name] = max(0, self.timers[name] - 1)
-        self.age += 1
-
     def draw(self, screen, cam):
         cx, cy = cam
         frames = self.images[self.facing]
@@ -231,15 +284,23 @@ class Entity:
 
 
 class Tile:
-    """A solid level tile: an entity of type _tile.
+    """A level tile. Plain '#' tiles have type _tile; a [name: tile] section in
+    RULES.txt defines more tile types, placed with LEGEND letters.
 
-    Entities see tiles through COLLIDE and IS(e, _tile), and e(DIE) on a tile
-    removes it. Tiles don't run rules or move; effects that change velocity
-    or facing on a tile do nothing.
+    Entities see tiles through COLLIDE and IS(e, type), and IS(e, _tile) is
+    true for every tile. e(DIE) on a tile removes it. Tiles don't run rules or
+    move; effects that change velocity, facing or position on a tile do nothing.
+    A tile with solid=0 is drawn and sensed but doesn't block movement.
     """
-    kind = "_tile"
+    is_tile = True
+    static = True
 
-    def __init__(self, c, r):
+    def __init__(self, c, r, kind="_tile", sprite=None, solid=True):
+        self.kind, self.solid = kind, solid
+        sprite = sprite or SPRITES["ground"]
+        self.image = sprite["images"][1][0]
+        self.top_image = sprite.get("top")     # drawn instead when no solid tile is above
+        self.step = None
         self.c, self.r = c, r
         self.rect = pygame.Rect(c * TILE, r * TILE, TILE, TILE)
         self.hitbox = self.rect
@@ -249,6 +310,7 @@ class Tile:
         self.facing = 1
         self.on_ground = False
         self.timers = {}
+        self.vars = {}
         self.age = 0
         self.prev_bottom = self.rect.bottom
         self.prev_top = self.rect.top
@@ -257,27 +319,35 @@ class Tile:
         self.contacts = []
 
 
-def build_kinds():
-    """Entity type -> how it looks. Types with no art here get a pink placeholder;
-    a level's LEGEND line can also borrow another type's art ("as")."""
-    walker = [make_walker_sprite(0), make_walker_sprite(1)]
-    flyer = [make_flyer_sprite(0), make_flyer_sprite(1)]
-    bullet = [make_bullet_sprite()]
-    orb = [make_orb_sprite(0), make_orb_sprite(1)]
+def sprite(frames, offset=(0, 0), anim_rate=1, hitbox=1.0, flip=None, top=None):
+    """A library entry. frames: animation frames facing right; flip: frames
+    facing left (default: the same frames); top: tile variant drawn when
+    nothing solid sits on top."""
+    return dict(images={1: frames, -1: flip or frames}, offset=offset, anim_rate=anim_rate,
+                hitbox=hitbox, top=top)
+
+
+def build_sprites():
+    """The sprite library. Any entity or tile type can use any of these with
+    [type: sprite=name]; without it, a type uses the sprite with its own name,
+    or a pink placeholder. Needs a display (pygame surfaces)."""
     return {
-        "player": dict(offset=(4, 2), anim_rate=1, hitbox_scale=1, coyote_frames=COYOTE_FRAMES,
-                       images={1: [make_player_sprite(1)], -1: [make_player_sprite(-1)]}),
-        "walker": dict(offset=(0, 0), anim_rate=10, hitbox_scale=HITBOX_SCALE,
-                       images={1: walker, -1: walker}),
-        "flyer": dict(offset=(0, 0), anim_rate=6, hitbox_scale=HITBOX_SCALE,
-                      images={1: flyer, -1: flyer}),
-        "bullet": dict(offset=(0, 0), anim_rate=1, hitbox_scale=1,
-                       images={1: bullet, -1: bullet}),
-        "turret": dict(offset=(2, 4), anim_rate=1, hitbox_scale=HITBOX_SCALE,
-                       images={1: [make_turret_sprite(1)], -1: [make_turret_sprite(-1)]}),
-        "orb": dict(offset=(0, 0), anim_rate=12, hitbox_scale=1,
-                    images={1: orb, -1: orb}),
+        "player": sprite([make_player_sprite(1)], offset=(4, 2), flip=[make_player_sprite(-1)]),
+        "walker": sprite([make_walker_sprite(0), make_walker_sprite(1)], anim_rate=10, hitbox=HITBOX_SCALE),
+        "flyer": sprite([make_flyer_sprite(0), make_flyer_sprite(1)], anim_rate=6, hitbox=HITBOX_SCALE),
+        "bullet": sprite([make_bullet_sprite()]),
+        "turret": sprite([make_turret_sprite(1)], offset=(2, 4), hitbox=HITBOX_SCALE,
+                         flip=[make_turret_sprite(-1)]),
+        "orb": sprite([make_orb_sprite(0), make_orb_sprite(1)], anim_rate=12),
+        "spikes": sprite([make_spikes_sprite()], hitbox=0.5),
+        # tiles (also usable by entities)
+        "ground": sprite([make_tile()], top=make_grass_tile()),
+        "brick": sprite([make_brick_tile()]),
+        "water": sprite([make_water_tile()]),
     }
+
+
+SPRITES = {}   # filled by Game() once pygame is up
 
 
 # ---------------------------------------------------------------- worlds
@@ -286,7 +356,7 @@ class LevelError(Exception):
 
 
 def load_level(path):
-    """Parse a level.txt into (rows, legend). legend: letter -> (type, look or None)."""
+    """Parse a level.txt into (rows, legend). legend: letter -> type."""
     legend = dict(DEFAULT_LEGEND)
     rows = []
     with open(path, encoding="utf-8") as f:
@@ -297,11 +367,12 @@ def load_level(path):
             if line.upper().startswith("LEGEND "):
                 letter, sep, rest = line[7:].partition(":")
                 letter, words = letter.strip(), rest.split()
-                ok = (sep and len(letter) == 1 and letter not in "#."
-                      and (len(words) == 1 or (len(words) == 3 and words[1] == "as")))
-                if not ok:
-                    raise LevelError(f"{path.name} line {lineno}: expected 'LEGEND X: type' or 'LEGEND X: type as look'")
-                legend[letter] = (words[0], words[2] if len(words) == 3 else None)
+                if "as" in words:
+                    raise LevelError(f"{path.name} line {lineno}: 'as' moved to RULES.txt: "
+                                     f"write [type: sprite=look] there")
+                if not (sep and len(letter) == 1 and letter not in "#." and len(words) == 1):
+                    raise LevelError(f"{path.name} line {lineno}: expected 'LEGEND X: type'")
+                legend[letter] = words[0]
                 continue
             if line:
                 rows.append(line)
@@ -309,7 +380,7 @@ def load_level(path):
         raise LevelError(f"{path.name}: no map rows")
     width = max(len(r) for r in rows)
     rows = [r.ljust(width, ".") for r in rows]
-    starts = sum(r.count(ch) for r in rows for ch, (kind, _) in legend.items() if kind == "player")
+    starts = sum(r.count(ch) for r in rows for ch, kind in legend.items() if kind == "player")
     if starts != 1:
         raise LevelError(f"{path.name}: needs exactly one player start, found {starts}")
     unknown = {ch for r in rows for ch in r if ch not in legend and ch not in "#."}
@@ -338,9 +409,8 @@ def world_dir(name):
 # ---------------------------------------------------------------- game
 class Game:
     def __init__(self, world_name=BASE_WORLD):
-        self.tile_img = make_tile()
-        self.grass_img = make_grass_tile()
-        self.base_kinds = build_kinds()
+        if not SPRITES:
+            SPRITES.update(build_sprites())
         self.message, self.message_timer = "", 0
         self.menu = None              # None, or index of the highlighted world
         self.deaths = 0
@@ -356,12 +426,10 @@ class Game:
                 names = ", ".join(n for n, _ in list_worlds())
                 raise LevelError(f"no world named {name!r}. Worlds: {names}")
             rows, legend = load_level(folder / "level.txt")
-            types = set(ENGINE_TYPES) | set(self.base_kinds) | {k for k, _ in legend.values()}
-            for kind, look in legend.values():
-                if look is not None and look not in self.base_kinds:
-                    raise LevelError(f"level.txt: no art named {look!r} to draw {kind} as. "
-                                     f"Art: {', '.join(sorted(self.base_kinds))}")
-            ruleset = rules.load_rules(folder / "RULES.txt", types)
+            types = set(ENGINE_TYPES) | set(legend.values())
+            ruleset = rules.load_rules(folder / "RULES.txt", types, set(SPRITES))
+            if ruleset.is_tile("player"):
+                raise LevelError("[player] can't be a tile type")
         except (LevelError, rules.RuleError, OSError) as err:
             if strict:
                 raise
@@ -370,11 +438,13 @@ class Game:
         changed = name != getattr(self, "world_name", None)
         self.world_name, self.folder = name, folder
         self.level, self.legend, self.rules = rows, legend, ruleset
-        self.looks = {kind: look for kind, look in legend.values() if look}
-        self.kinds = dict(self.base_kinds)
+        self.placeholders = {}
         self.input.bindings = ruleset.bindings
+        self.input.buffers = ruleset.buffers
+        self.input.clear()
         self.level_w = len(rows[0]) * TILE
         self.level_h = len(rows) * TILE
+        self.rows = len(rows)
         if changed:
             self.deaths = 0
         pygame.display.set_caption(f"Platformer - {name}")
@@ -386,16 +456,27 @@ class Game:
         self.message, self.message_timer = text, 4 * FPS
 
     # --- entities
+    def sprite_for(self, kind):
+        """A type's sprite: its sprite= option, else the sprite named like the type."""
+        name = self.rules.options.get(kind, {}).get("sprite", kind)
+        if name in SPRITES:
+            return SPRITES[name]
+        if kind not in self.placeholders:
+            self.placeholders[kind] = sprite([make_placeholder_sprite()])
+        return self.placeholders[kind]
+
     def make_entity(self, kind, x, y):
-        look = self.looks.get(kind, kind)
-        k = self.kinds.get(look)
-        if k is None:
-            img = make_placeholder_sprite()
-            k = self.kinds[look] = dict(offset=(0, 0), anim_rate=1, hitbox_scale=1,
-                                        images={1: [img], -1: [img]})
+        k = self.sprite_for(kind)
+        hitbox = self.rules.options.get(kind, {}).get("hitbox", k["hitbox"])
         ox, oy = k["offset"]
-        return Entity(kind, x + ox, y + oy, k["images"], k["anim_rate"], k["hitbox_scale"],
-                      k.get("coyote_frames", 0))
+        return Entity(kind, x + ox, y + oy, k["images"], k["anim_rate"], hitbox,
+                      COYOTE_FRAMES if kind == "player" else 0)
+
+    def make_tile(self, kind, c, r):
+        if kind == "_tile":
+            return Tile(c, r)
+        solid = self.rules.options.get(kind, {}).get("solid", True)
+        return Tile(c, r, kind, self.sprite_for(kind), solid)
 
     def spawn(self, kind, spawner, owner):
         """SPAWN: a new entity just in front of the spawner, facing the same way.
@@ -418,10 +499,20 @@ class Game:
         self.spawned.append(ent)
 
     def solid_at(self, px, py):
-        c, r = int(px // TILE), int(py // TILE)
-        if 0 <= r < len(self.grid) and 0 <= c < len(self.grid[0]):
-            return self.grid[r][c] == "#"
-        return False
+        return self.cell_solid(int(px // TILE), int(py // TILE))
+
+    # --- grid (cells are tiles; r counts screen rows from the top)
+    def cell_solid(self, c, r):
+        t = self.tiles.get((c, r))
+        return t is not None and t.solid
+
+    def cell_of(self, ent):
+        """The cell holding an entity's bottom-center point."""
+        return ent.rect.centerx // TILE, (ent.rect.bottom - 1) // TILE
+
+    def cell_topleft(self, ent, c, r):
+        """Where an entity's rect goes to sit in a cell: centered, on the cell's floor."""
+        return c * TILE + (TILE - ent.rect.w) / 2, (r + 1) * TILE - ent.rect.h
 
     def entities(self):
         return [self.player] + self.others
@@ -442,15 +533,18 @@ class Game:
         for r, row in enumerate(self.level):
             for c, ch in enumerate(row):
                 x, y = c * TILE, r * TILE
-                if ch == "#":
-                    self.tiles[(c, r)] = Tile(c, r)
-                elif ch in self.legend:
-                    ent = self.make_entity(self.legend[ch][0], x, y)
+                kind = "_tile" if ch == "#" else self.legend.get(ch)
+                if kind is None:
+                    continue
+                if kind == "_tile" or self.rules.is_tile(kind):
+                    self.tiles[(c, r)] = self.make_tile(kind, c, r)
+                else:
+                    ent = self.make_entity(kind, x, y)
                     if ent.kind == "player":
                         self.player = ent
                     else:
                         self.others.append(ent)
-        self.solids = [t.rect for t in self.tiles.values()]
+        self.solids = [t.rect for t in self.tiles.values() if t.solid]
         self.update_camera()
 
     def kill_player(self):
@@ -528,7 +622,7 @@ class Game:
             del self.tiles[(c, r)]
             self.grid[r][c] = "."
         if dead_tiles:
-            self.solids = [t.rect for t in self.tiles.values()]
+            self.solids = [t.rect for t in self.tiles.values() if t.solid]
 
         for ent in self.entities():
             ent.move(self.solids)
@@ -550,8 +644,10 @@ class Game:
         screen.fill(SKY)
         for t in self.tiles.values():
             if self.on_screen(t.rect):
-                top = t.r == 0 or self.grid[t.r - 1][t.c] != "#"
-                screen.blit(self.grass_img if top else self.tile_img, (t.rect.x - cx, t.rect.y - cy))
+                img = t.image
+                if t.top_image is not None and not self.cell_solid(t.c, t.r - 1):
+                    img = t.top_image
+                screen.blit(img, (t.rect.x - cx, t.rect.y - cy))
         for e in self.others:
             if self.on_screen(e.rect):
                 e.draw(screen, self.cam)

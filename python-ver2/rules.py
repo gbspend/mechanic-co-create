@@ -1,16 +1,22 @@
 """Rule grammar: parsing RULES.txt and the trigger/effect vocabulary.
 
+A section header names an entity type and can set options:
+    [walker]                          rules for entities of type walker
+    [chaser: sprite=walker, hitbox=0.6]   art from the sprite library, hitbox size
+    [brick: tile, sprite=brick]       a tile type (placed by level LEGEND letters; no rules)
+    [water: tile, solid=0]            a tile you can pass through (still seen by COLLIDE)
+
 A rule is   TRIGGER [& TRIGGER ...] -> EFFECT [, EFFECT ...]
   - All triggers must be true (in the same frame) for the effects to run.
   - Prefix a trigger with ! to negate it.
   - Rules run top to bottom, once per frame, before physics moves the entity.
 
-Variables (lowercase names) stand for other entities:
+Entity variables (lowercase names) stand for other entities:
   - A binding trigger such as COLLIDE(e) fills in e, once for every entity it
     finds. Later triggers in the rule filter those matches, and the effects
     run once per surviving match.
   - v(TRIGGER) / v(EFFECT) asks or applies something on entity v instead of self:
-        COLLIDE(e) & IS(e, player) & e(FALLING) -> DIE, e(SET_YVEL(8))
+        COLLIDE(e) & IS(e, player) & e(FALLING) -> DIE, e(SET(_yvel, 8))
   - `self` is always bound to the entity running the rule.
   - A variable must be bound (left to right) before it is used. Binding a
     variable that is already bound filters instead: COLLIDE(e) then means
@@ -27,12 +33,19 @@ parameter to give it a meaning that is checked on load:
     "spawn"   an entity type that can be spawned (not an engine type like _tile)
     "button"  a BIND name or a key name
     "dir"     LEFT, RIGHT, -1 or 1
+    "dir4"    UP, DOWN, LEFT or RIGHT (grid directions)
+    "count"   a whole number of frames, 1 or more (no RANDOM)
+    "var"     a var name: built-in (_xvel ...) or rule-made (ammo ...)
+    "compare" a comparison such as hp <= 0 (becomes a Compare)
 Arity is checked too, so typos fail at startup with a line number.
 
 Anywhere a plain number goes, RANDOM(min, max) can stand in. It rolls a new
 value (any number in the range) every time its trigger or effect runs.
 
-Y velocity in rules is UP-POSITIVE (jump = ADD_YVEL(10), gravity = ADD_YVEL(-0.6)),
+Vars are numbers on an entity. Names starting with _ are built-ins mapped to
+engine state (BUILTIN_VARS); any other name is made by rules and starts at 0.
+
+Y velocity in rules is UP-POSITIVE (jump = SET(_yvel, 10), gravity = ADD(_yvel, -0.6)),
 even though pygame's screen y grows downward. The conversion happens here.
 """
 import inspect
@@ -87,43 +100,69 @@ def key_code(name):
 class Input:
     """Per-frame button state, with named buttons from BIND lines.
 
-    Input buffering: a key press keeps BUTTON_PRESS true for up to
-    buffer_frames more frames, until a rule that tests it fires. Every rule
-    that frame still sees it; it's used up at the end of the frame. So a rule
-    that would react on the press frame still does, and a press nothing could
-    use yet (jump just before landing) waits a moment for a rule that can.
+    Input buffering: a press keeps BUTTON_PRESS true for up to buffer_frames
+    more frames, until a rule that tests it fires. Every rule that frame still
+    sees it; it's used up at the end of the frame. So a rule that would react
+    on the press frame still does, and a press nothing could use yet (jump
+    just before landing) waits a moment for a rule that can.
+
+    Presses are buffered per BIND name, so a key in two BINDs counts for both.
+    BUFFER lines in RULES.txt (buffers: name -> (group, frames)) give names
+    their own lifetime, and a press of one name in a group cancels the others'
+    pending presses: BUFFER up down left right: 60 remembers only the newest
+    direction, for up to a second. Raw key names (BUTTON_PRESS(SPACE)) use
+    buffer_frames.
     """
 
-    def __init__(self, bindings, buffer_frames=0):
+    def __init__(self, bindings, buffer_frames=0, buffers=None):
         self.bindings = bindings          # name -> set of key codes
         self.buffer_frames = buffer_frames
+        self.buffers = buffers or {}      # name -> (group id, frames), from BUFFER lines
         self.held = None
-        self.pressed = {}                 # key -> buffered frames left
+        self.pressed = {}                 # raw key -> buffered frames left
+        self.pending = {}                 # BIND name -> buffered frames left
         self.released = set()
-        self.used = set()                 # pressed keys a firing rule consumed this frame
+        self.used_keys = set()            # consumed by a firing rule this frame
+        self.used_names = set()
 
     def press(self, key):
         self.pressed[key] = self.buffer_frames
+        for name, keys in self.bindings.items():
+            if key not in keys:
+                continue
+            group, frames = self.buffers.get(name, (None, self.buffer_frames))
+            if group is not None:          # newest press in a group wins
+                for other, (g, _) in self.buffers.items():
+                    if g == group and other != name:
+                        self.pending.pop(other, None)
+            self.pending[name] = frames
 
     def release(self, key):
         self.released.add(key)
 
     def use(self, b):
-        self.used |= self.keys_for(b) & self.pressed.keys()
+        if b in self.bindings:
+            if b in self.pending:
+                self.used_names.add(b)
+        else:
+            self.used_keys |= self.keys_for(b) & self.pressed.keys()
 
     def end_frame(self):
-        for k in list(self.pressed):
-            if k in self.used or self.pressed[k] <= 0:
-                del self.pressed[k]
-            else:
-                self.pressed[k] -= 1
-        self.used.clear()
+        for live, used in ((self.pressed, self.used_keys), (self.pending, self.used_names)):
+            for k in list(live):
+                if k in used or live[k] <= 0:
+                    del live[k]
+                else:
+                    live[k] -= 1
+            used.clear()
         self.released.clear()
 
     def clear(self):
         self.pressed.clear()
+        self.pending.clear()
         self.released.clear()
-        self.used.clear()
+        self.used_keys.clear()
+        self.used_names.clear()
 
     def keys_for(self, button):
         if button in self.bindings:
@@ -135,6 +174,8 @@ class Input:
         return any(self.held[k] for k in self.keys_for(b))
 
     def was_pressed(self, b):
+        if b in self.bindings:
+            return b in self.pending
         return not self.keys_for(b).isdisjoint(self.pressed)
 
     def was_released(self, b):
@@ -143,8 +184,9 @@ class Input:
 
 # ---------------------------------------------------------------- triggers
 @trigger("AUTO")
-def t_auto(ent, ctx):
-    return True
+def t_auto(ent, ctx, frames: "count" = 1):
+    """Every frame, or every n frames with AUTO(n) (counted from spawn)."""
+    return ent.age % int(frames) == 0
 
 
 @trigger("BUTTON_PRESS")
@@ -192,11 +234,6 @@ def t_start(ent, ctx):
     return ent.age == 0
 
 
-@trigger("EVERY")
-def t_every(ent, ctx, frames):
-    return ent.age % max(1, int(frames)) == 0
-
-
 def _ahead_x(ent):
     return ent.rect.right if ent.facing > 0 else ent.rect.left - 1
 
@@ -242,7 +279,8 @@ def t_owner(ent, ctx, o: "bind"):
 
 @trigger("IS")
 def t_is(ent, ctx, e: "ref", kind: "type"):
-    return e.kind == kind
+    """e is of that type. IS(e, _tile) is true for every tile, whatever its type."""
+    return e.kind == kind or (kind == "_tile" and getattr(e, "is_tile", False))
 
 
 @trigger("FROM_ABOVE")
@@ -257,45 +295,120 @@ def t_from_below(ent, ctx, e: "ref"):
     return e.prev_top >= ent.hitbox.bottom - STOMP_TOLERANCE
 
 
+# --- grid: tile-sized cells, usable alongside pixel movement
+DIRS4 = {"UP": (0, -1), "DOWN": (0, 1), "LEFT": (-1, 0), "RIGHT": (1, 0)}   # (col, screen row) steps
+
+
+def _neighbor(ent, ctx, direction):
+    c, r = ctx.cell_of(ent)
+    dc, dr = DIRS4[direction]
+    return c + dc, r + dr
+
+
+@trigger("BLOCKED")
+def t_blocked(ent, ctx, direction: "dir4"):
+    """The next grid cell that way holds a solid tile."""
+    return ctx.cell_solid(*_neighbor(ent, ctx, direction))
+
+
+@trigger("STEPPING")
+def t_stepping(ent, ctx):
+    """In the middle of a STEP glide."""
+    return ent.step is not None
+
+
 # ---------------------------------------------------------------- effects
-@effect("ADD_XVEL")
-def e_add_xvel(ent, ctx, n):
-    ent.vx += n
+# --- vars: numbers stored on an entity
+# Built-in vars start with "_" and map onto engine state. Everything else is a
+# rule-made var: it springs into existence (at 0) the first time it's read or
+# written, so ADD(ammo, 1) on an entity with no ammo yet leaves it at 1.
+def _set_xpos(ent, ctx, v):
+    ent.fx = float(v)
+    ent.rect.x = round(ent.fx)
 
 
-@effect("SET_XVEL")
-def e_set_xvel(ent, ctx, n):
-    ent.vx = n
+def _set_ypos(ent, ctx, v):
+    ent.fy = float(ctx.level_h - v - ent.rect.h)
+    ent.rect.y = round(ent.fy)
 
 
-@effect("SCALE_XVEL")
-def e_scale_xvel(ent, ctx, f):
-    ent.vx *= f
+def _set_facing(ent, ctx, v):
+    ent.facing = 1 if v >= 0 else -1
 
 
-@effect("CLAMP_XVEL")
-def e_clamp_xvel(ent, ctx, lo, hi):
-    ent.vx = max(lo, min(hi, ent.vx))
+def _get_col(ent, ctx):
+    return ctx.cell_of(ent)[0]
 
 
-@effect("ADD_YVEL")
-def e_add_yvel(ent, ctx, n):
-    ent.vy -= n
+def _get_row(ent, ctx):
+    return ctx.rows - 1 - ctx.cell_of(ent)[1]
 
 
-@effect("SET_YVEL")
-def e_set_yvel(ent, ctx, n):
-    ent.vy = -n
+def _set_cell(ent, ctx, col, row):
+    ent.step = None
+    _place(ent, *ctx.cell_topleft(ent, int(col), ctx.rows - 1 - int(row)))
 
 
-@effect("SCALE_YVEL")
-def e_scale_yvel(ent, ctx, f):
-    ent.vy *= f
+BUILTIN_VARS = {
+    # name: (getter, setter or None for read-only)
+    "_xvel":   (lambda e, c: e.vx, lambda e, c, v: setattr(e, "vx", v)),
+    "_yvel":   (lambda e, c: -e.vy, lambda e, c, v: setattr(e, "vy", -v)),      # up-positive
+    "_xpos":   (lambda e, c: e.fx, _set_xpos),                                   # left edge, px
+    "_ypos":   (lambda e, c: c.level_h - (e.fy + e.rect.h), _set_ypos),          # bottom edge, px above level bottom
+    "_facing": (lambda e, c: e.facing, _set_facing),                             # 1 right, -1 left
+    "_age":    (lambda e, c: e.age, None),                                       # frames since spawn
+    # grid cell holding the entity's bottom-center; row 0 = bottom line of level.txt
+    "_col":    (_get_col, lambda e, c, v: _set_cell(e, c, v, _get_row(e, c))),
+    "_row":    (_get_row, lambda e, c, v: _set_cell(e, c, _get_col(e, c), v)),
+}
+# Tiles (static) can read built-ins, but writing them does nothing.
 
 
-@effect("CLAMP_YVEL")
-def e_clamp_yvel(ent, ctx, lo, hi):
-    ent.vy = -max(lo, min(hi, -ent.vy))
+def get_var(ent, ctx, name):
+    if name in BUILTIN_VARS:
+        return BUILTIN_VARS[name][0](ent, ctx)
+    return ent.vars.setdefault(name, 0.0)
+
+
+def set_var(ent, ctx, name, value):
+    if name in BUILTIN_VARS:
+        if not getattr(ent, "static", False):
+            BUILTIN_VARS[name][1](ent, ctx, value)
+    else:
+        ent.vars[name] = value
+
+
+@effect("SET")
+def e_set(ent, ctx, var: "var", n):
+    set_var(ent, ctx, var, n)
+
+
+@effect("ADD")
+def e_add(ent, ctx, var: "var", n):
+    set_var(ent, ctx, var, get_var(ent, ctx, var) + n)
+
+
+@effect("SCALE")
+def e_scale(ent, ctx, var: "var", f):
+    set_var(ent, ctx, var, get_var(ent, ctx, var) * f)
+
+
+@effect("CLAMP")
+def e_clamp(ent, ctx, var: "var", lo, hi):
+    set_var(ent, ctx, var, max(lo, min(hi, get_var(ent, ctx, var))))
+
+
+COMPARE_OPS = {
+    "<": lambda a, b: a < b, "<=": lambda a, b: a <= b,
+    ">": lambda a, b: a > b, ">=": lambda a, b: a >= b,
+    "==": lambda a, b: a == b, "!=": lambda a, b: a != b,
+}
+
+
+@trigger("CHECK")
+def t_check(ent, ctx, cmp: "compare"):
+    value = cmp.value.roll() if isinstance(cmp.value, Random) else cmp.value
+    return COMPARE_OPS[cmp.op](get_var(ent, ctx, cmp.var), value)
 
 
 @effect("FACE")
@@ -325,6 +438,34 @@ def e_stand_on(ent, ctx, e: "ref"):
     ent.vy = max(e.vy, 0)
     ent.vx += e.vx
     ent.supported = True
+
+
+@effect("STEP")
+def e_step(ent, ctx, direction: "dir4", frames=0):
+    """Move one grid cell, if that cell isn't solid. Lines up with the current
+    cell first. frames > 0 glides there over that many frames (velocity is
+    ignored meanwhile); 0 jumps there at once. LEFT / RIGHT also set facing."""
+    if getattr(ent, "static", False) or ent.step is not None:
+        return
+    c, r = ctx.cell_of(ent)
+    tc, tr = _neighbor(ent, ctx, direction)
+    if direction in ("LEFT", "RIGHT"):
+        ent.facing = DIRS4[direction][0]
+    if ctx.cell_solid(tc, tr):
+        return
+    ent.vx = ent.vy = 0.0
+    sx, sy = ctx.cell_topleft(ent, c, r)
+    tx, ty = ctx.cell_topleft(ent, tc, tr)
+    if frames <= 0:
+        _place(ent, tx, ty)
+    else:
+        _place(ent, sx, sy)
+        ent.step = [sx, sy, tx, ty, int(frames), 0]
+
+
+def _place(ent, x, y):
+    ent.fx, ent.fy = float(x), float(y)
+    ent.rect.topleft = (round(x), round(y))
 
 
 @effect("WALK")
@@ -357,6 +498,13 @@ def e_cooldown(ent, ctx, timer, frames):
 @dataclass
 class Var:
     name: str
+
+
+@dataclass
+class Compare:
+    var: str
+    op: str
+    value: object             # float or Random
 
 
 @dataclass
@@ -445,7 +593,12 @@ class Rule:
 @dataclass
 class RuleSet:
     bindings: dict = field(default_factory=dict)
+    buffers: dict = field(default_factory=dict)    # BIND name -> (group id, frames), from BUFFER lines
     sections: dict = field(default_factory=dict)   # section name (entity type) -> [Rule]
+    options: dict = field(default_factory=dict)    # section name -> {"sprite", "hitbox", "tile", "solid"}
+
+    def is_tile(self, kind):
+        return bool(self.options.get(kind, {}).get("tile"))
 
     def run(self, section, ent, ctx):
         for rule in self.sections.get(section, ()):
@@ -477,6 +630,7 @@ def split_top(s, sep):
 
 
 RANDOM_RE = re.compile(r"^RANDOM\s*\((.*)\)$")
+COMPARE_RE = re.compile(r"^([a-z_][a-z0-9_]*)\s*(<=|>=|==|!=|<|>)\s*(.+)$")
 
 
 def parse_arg(a):
@@ -540,6 +694,8 @@ class Parser:
 
         for i, a in enumerate(args):
             k = spec.kinds[i] if i < len(spec.kinds) else None
+            if isinstance(a, Random) and k == "count":
+                self.err(f"{name} needs a fixed number of frames, not RANDOM")
             if isinstance(a, Random) and k is not None:
                 self.err(f"{name}: RANDOM can only stand in for a number, not argument {i + 1}")
             if k in ("bind", "ref"):
@@ -552,15 +708,87 @@ class Parser:
                         self.err(f"can't bind {a!r} inside a negated trigger ({text!r})")
                     bound.add(a)
                 args[i] = Var(a)
+            elif k == "var":
+                self.var_name(name, a, bound, write=True)
+            elif k == "compare":
+                cm = COMPARE_RE.match(a) if isinstance(a, str) else None
+                if not cm:
+                    self.err(f"{name} expects a comparison like {name}(ammo > 0), got {a!r}")
+                var, op, rhs = cm.groups()
+                self.var_name(name, var, bound, write=False)
+                try:
+                    value = parse_arg(rhs.strip())
+                except RuleError as err:
+                    self.err(str(err))
+                if isinstance(value, str):
+                    self.err(f"{name}: compare {var} against a number or RANDOM, got {rhs.strip()!r}")
+                args[i] = Compare(var, op, value)
+            elif k == "count" and not (isinstance(a, float) and a >= 1 and a == int(a)):
+                self.err(f"{name} expects a whole number of frames, 1 or more, got {a!r}")
+            elif k == "dir4" and a not in DIRS4:
+                self.err(f"{name} expects UP, DOWN, LEFT or RIGHT, got {a!r}")
             elif k == "dir" and a not in ("LEFT", "RIGHT", -1, 1):
                 self.err(f"{name} expects LEFT, RIGHT, -1 or 1, got {a!r}")
             elif k in ("type", "spawn", "button"):
                 self.checks.append((k, a, self.lineno))
         return Call(name, spec, tuple(args), bool(neg))
 
+    def var_name(self, fn, a, bound, write):
+        if not (isinstance(a, str) and VAR_RE.match(a)):
+            self.err(f"{fn}: {a!r} isn't a var name (lowercase letters, digits, _)")
+        if a.startswith("_"):
+            if a not in BUILTIN_VARS:
+                self.err(f"unknown built-in var {a!r}. Built-ins: {', '.join(BUILTIN_VARS)}"
+                         " (your own var names can't start with _)")
+            if write and BUILTIN_VARS[a][1] is None:
+                self.err(f"{fn}: {a} is read-only")
+        elif a in bound:
+            self.err(f"{fn}: {a!r} is an entity variable in this rule; to change a var on it write {a}({fn}(...))")
 
-def load_rules(path, engine_types=()):
-    """Parse a rules file. engine_types: entity types the game defines itself (e.g. _tile)."""
+
+SECTION_RE = re.compile(r"^\[\s*([A-Za-z][A-Za-z0-9_]*)\s*(?::(.*))?\]$")
+
+
+def parse_options(text, lineno, sprites):
+    """Section options: [name: sprite=walker, hitbox=0.7] or [name: tile, solid=0]."""
+    def err(msg):
+        raise RuleError(f"line {lineno}: {msg}")
+    opts = {}
+    for part in split_top(text or "", ","):
+        if not part:
+            continue
+        key, eq, val = (x.strip() for x in part.partition("="))
+        key = key.lower()
+        if key == "tile" and not eq:
+            opts["tile"] = True
+        elif key == "sprite" and val:
+            if sprites is not None and val not in sprites:
+                err(f"no sprite named {val!r}. Sprites: {', '.join(sorted(sprites))}")
+            opts["sprite"] = val
+        elif key == "hitbox":
+            try:
+                opts["hitbox"] = float(val)
+            except ValueError:
+                err(f"hitbox needs a number like hitbox=0.7, got {val!r}")
+            if not opts["hitbox"] > 0:
+                err("hitbox scales the sprite size (1 = same size, 1.2 = 20% bigger); it must be more than 0")
+        elif key == "solid" and val in ("0", "1"):
+            opts["solid"] = val == "1"
+        else:
+            err(f"unknown section option {part!r}. Options: sprite=NAME, hitbox=N, tile, solid=0|1")
+    if "solid" in opts and not opts.get("tile"):
+        err("solid=... only applies to tile types (add the 'tile' option)")
+    if "hitbox" in opts and opts.get("tile"):
+        err("tiles use their whole cell; hitbox=... only applies to entities")
+    return opts
+
+
+def load_rules(path, engine_types=(), sprites=None):
+    """Parse a rules file.
+
+    engine_types: entity types the game defines itself (e.g. _tile).
+    sprites: names in the sprite library, to check sprite= options (None: don't check).
+    """
     rs = RuleSet()
     section = None
     checks = []
@@ -570,8 +798,14 @@ def load_rules(path, engine_types=()):
             if not line:
                 continue
             if line.startswith("[") and line.endswith("]"):
-                section = line[1:-1].strip().lower()
+                m = SECTION_RE.match(line)
+                if not m:
+                    raise RuleError(f"line {lineno}: expected [type] or [type: options], got {line!r}")
+                section = m.group(1).lower()
                 rs.sections.setdefault(section, [])
+                opts = parse_options(m.group(2), lineno, sprites)
+                if opts:
+                    rs.options.setdefault(section, {}).update(opts)
                 continue
             if line.upper().startswith("BIND "):
                 name, sep, keys = line[5:].partition(":")
@@ -585,6 +819,22 @@ def load_rules(path, engine_types=()):
                     codes.add(code)
                 rs.bindings[name.strip()] = codes
                 continue
+            if line.upper().startswith("BUFFER "):
+                names, sep, frames = line[7:].partition(":")
+                names = names.split()
+                try:
+                    n = float(frames)
+                except ValueError:
+                    n = -1
+                if not sep or not names or n < 0 or n != int(n):
+                    raise RuleError(f"line {lineno}: BUFFER needs 'BUFFER name name ...: frames', "
+                                    f"frames a whole number 0 or more")
+                for name in names:
+                    if name in rs.buffers:
+                        raise RuleError(f"line {lineno}: {name!r} is already in a BUFFER line")
+                    rs.buffers[name] = (lineno, int(n))
+                    checks.append(("buffer", name, lineno))
+                continue
             if "->" not in line:
                 raise RuleError(f"line {lineno}: expected 'TRIGGER -> EFFECT', got {line!r}")
             if section is None:
@@ -594,14 +844,23 @@ def load_rules(path, engine_types=()):
             bound = {"self"}
             trigs = [p.call(t, TRIGGERS, "trigger", bound, True) for t in split_top(lhs, "&")]
             effs = [p.call(e, EFFECTS, "effect", bound, False) for e in split_top(rhs, ",")]
+            if rs.is_tile(section):
+                raise RuleError(f"line {lineno}: [{section}] is a tile type; tiles don't run rules")
             rs.sections[section].append(Rule(trigs, effs, line, lineno))
 
+    for name in rs.sections:
+        if rs.is_tile(name) and rs.sections[name]:
+            raise RuleError(f"[{name}] is a tile type; tiles don't run rules")
     types = set(rs.sections) | set(engine_types)
     for kind, value, lineno in checks:
         if kind in ("type", "spawn") and value not in types:
             raise RuleError(f"line {lineno}: unknown entity type {value!r}. Known: {', '.join(sorted(types))}")
         if kind == "spawn" and value.startswith("_"):
             raise RuleError(f"line {lineno}: can't SPAWN engine type {value!r}")
+        if kind == "spawn" and rs.is_tile(value):
+            raise RuleError(f"line {lineno}: can't SPAWN tile type {value!r}")
+        if kind == "buffer" and value not in rs.bindings:
+            raise RuleError(f"line {lineno}: BUFFER lists BIND names; {value!r} has no BIND line")
         if kind == "button" and not (isinstance(value, str) and (value in rs.bindings or key_code(value))):
             raise RuleError(f"line {lineno}: {value!r} is not a BIND name or key name")
     return rs

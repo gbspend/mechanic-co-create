@@ -1,56 +1,67 @@
 # RUNNER: you run nonstop and bounce off walls; J turns you around. No gun.
-# Jumping into a tile from below smashes it. Chasers patrol until you get
-# close, then run at you and hop over walls. Lure them into pits.
+# Jumping into a brick from below smashes it (ground never breaks). Spikes
+# kill you (not enemies). Chasers patrol until you get close, then run at you
+# and hop over walls. Lure them into pits.
 # Vocabulary reference: the base RULES.txt (two folders up).
 
 BIND jump: SPACE W UP Z K
-BIND turn: J X
+
+[brick: tile, sprite=brick]
+[spike: tile, sprite=spikes]
 
 [player]
 START -> FACE(RIGHT)
 WALL_AHEAD -> TURN
-BUTTON_PRESS(turn) -> TURN
+BUTTON_PRESS(A) -> FACE(LEFT)
+BUTTON_PRESS(D) -> FACE(RIGHT)
+BUTTON_PRESS(X) -> TURN
 AUTO -> WALK(3.2)
 
-BUTTON_PRESS(jump) & ON_GROUND -> SET_YVEL(10)
-AUTO -> ADD_YVEL(-0.6)
-BUTTON_HELD(jump) & RISING -> ADD_YVEL(0.3)
-AUTO -> CLAMP_YVEL(-12, 100)
+BUTTON_PRESS(jump) & ON_GROUND -> SET(_yvel, 10)
+AUTO -> ADD(_yvel, -0.6)
+BUTTON_HELD(jump) & RISING -> ADD(_yvel, 0.3)
+AUTO -> CLAMP(_yvel, -12, 100)
 
-# Head-butt: any tile we hit from underneath breaks
-COLLIDE(t) & IS(t, _tile) & t(FROM_BELOW(self)) -> t(DIE)
+# Head-butt: bricks we hit from underneath break
+COLLIDE(t) & IS(t, brick) & t(FROM_BELOW(self)) -> t(DIE)
+
+# Spikes kill, but not while any part of your feet is still over a non-spike
+# tile (edge forgiveness). FROM_ABOVE keeps walls beside you from counting.
+AUTO -> SET(safe, 0)
+COLLIDE(t) & IS(t, _tile) & !IS(t, spike) & t(FROM_ABOVE(self)) -> SET(safe, 1)
+COLLIDE(t) & IS(t, spike) & CHECK(safe == 0) -> DIE
 
 FELL_OUT -> DIE
 
-[chaser]
+[chaser: sprite=walker]
 START -> FACE(LEFT)
-AUTO -> ADD_YVEL(-0.6), CLAMP_YVEL(-12, 100)
+AUTO -> ADD(_yvel, -0.6), CLAMP(_yvel, -12, 100)
 LEDGE_AHEAD -> TURN
 WALL_AHEAD -> TURN
 AUTO -> WALK(1)
 # Spotted you: face you and sprint. This overrides the TURNs above, so a
 # chasing chaser runs off ledges, and hops when a wall is in its way.
 NEAR(e, 260) & IS(e, player) -> FACE_TOWARD(e), WALK(2.6)
-WALL_AHEAD & ON_GROUND -> ADD_YVEL(8)
+WALL_AHEAD & ON_GROUND -> ADD(_yvel, 8)
 
-COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET_YVEL(9))
+COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET(_yvel, 12))
 COLLIDE(e) & IS(e, player) -> e(DIE)
 FELL_OUT -> DIE
 
 [walker]
 START -> FACE(LEFT)
-AUTO -> ADD_YVEL(-0.6), CLAMP_YVEL(-12, 100)
+AUTO -> ADD(_yvel, -0.6), CLAMP(_yvel, -12, 100)
 WALL_AHEAD -> TURN
 LEDGE_AHEAD -> TURN
 AUTO -> WALK(1.2)
 
-COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET_YVEL(9))
+COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET(_yvel, 12))
 COLLIDE(e) & IS(e, player) -> e(DIE)
 FELL_OUT -> DIE
 
 [flyer]
-START -> ADD_YVEL(-2.8)
+START -> ADD(_yvel, -2.8)
 AUTO -> SPRING_Y(0.0016)
 
-COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET_YVEL(9))
+COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET(_yvel, 12))
 COLLIDE(e) & IS(e, player) -> e(DIE)

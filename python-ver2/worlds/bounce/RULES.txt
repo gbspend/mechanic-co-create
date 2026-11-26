@@ -8,17 +8,17 @@ BIND right: RIGHT D
 BIND jump:  SPACE W UP Z K
 
 [player]
-AUTO -> SET_XVEL(0)
-BUTTON_HELD(left)  -> ADD_XVEL(-4), FACE(LEFT)
-BUTTON_HELD(right) -> ADD_XVEL(4), FACE(RIGHT)
+AUTO -> SET(_xvel, 0)
+BUTTON_HELD(left)  -> ADD(_xvel, -4), FACE(LEFT)
+BUTTON_HELD(right) -> ADD(_xvel, 4), FACE(RIGHT)
 
-BUTTON_PRESS(jump) & ON_GROUND -> SET_YVEL(10)
-AUTO -> ADD_YVEL(-0.6)
-BUTTON_HELD(jump) & RISING -> ADD_YVEL(0.3)
-AUTO -> CLAMP_YVEL(-12, 100)
+BUTTON_PRESS(jump) & ON_GROUND -> SET(_yvel, 10)
+AUTO -> ADD(_yvel, -0.6)
+BUTTON_HELD(jump) & RISING -> ADD(_yvel, 0.3)
+AUTO -> CLAMP(_yvel, -12, 100)
 
 # Orbs: bounce if we came down on top (hold jump for extra height), else die
-COLLIDE(b) & IS(b, orb) & FALLING & b(FROM_ABOVE(self)) -> SET_YVEL(9)
+COLLIDE(b) & IS(b, orb) & FALLING & b(FROM_ABOVE(self)) -> SET(_yvel, 9)
 COLLIDE(b) & IS(b, orb) & !b(FROM_ABOVE(self)) -> DIE
 
 # Turret tops are solid: on top of one and not jumping up -> stand on it.
@@ -34,26 +34,26 @@ AUTO -> WALK(2)
 COLLIDE(t) & IS(t, _tile) -> DIE
 AFTER(300) -> DIE
 
-[turret_r]
+[turret_r: sprite=turret]
 START -> FACE(RIGHT)
-EVERY(80) -> SPAWN(orb)
+AUTO(80) -> SPAWN(orb)
 
-[turret_l]
+[turret_l: sprite=turret]
 START -> FACE(LEFT)
-EVERY(80) -> SPAWN(orb)
+AUTO(80) -> SPAWN(orb)
 
 [walker]
 START -> FACE(LEFT)
-AUTO -> ADD_YVEL(-0.6), CLAMP_YVEL(-12, 100)
+AUTO -> ADD(_yvel, -0.6), CLAMP(_yvel, -12, 100)
 WALL_AHEAD -> TURN
 LEDGE_AHEAD -> TURN
 AUTO -> WALK(1.2)
-COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET_YVEL(8))
+COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET(_yvel, 8))
 COLLIDE(e) & IS(e, player) -> e(DIE)
 FELL_OUT -> DIE
 
 [flyer]
-START -> ADD_YVEL(-2.8)
+START -> ADD(_yvel, -2.8)
 AUTO -> SPRING_Y(0.0016)
-COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET_YVEL(8))
+COLLIDE(e) & IS(e, player) & e(FALLING) & FROM_ABOVE(e) -> DIE, e(SET(_yvel, 8))
 COLLIDE(e) & IS(e, player) -> e(DIE)
